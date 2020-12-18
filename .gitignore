@@ -1,0 +1,10 @@
+# Directories
+.idea/
+build/
+
+# Files
+*.iml
+*.iws
+*.ipr
+*.ids
+*.exe
