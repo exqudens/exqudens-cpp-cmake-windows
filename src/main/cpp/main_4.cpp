@@ -2,19 +2,31 @@
 
 const char g_szClassName[] = "myWindowClass";
 
+void wmPaint(HWND hwnd) {
+  PAINTSTRUCT ps;
+  HDC hdc = BeginPaint(hwnd, &ps);
+
+  // All painting occurs here, between BeginPaint and EndPaint.
+  FillRect(hdc, &ps.rcPaint, (HBRUSH) (COLOR_WINDOW + 1));
+  TextOutA(hdc, 10, 10, "File Successfully Loaded", 60);
+  EndPaint(hwnd, &ps);
+}
+
 // Step 4: the Window Procedure
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   switch (msg) {
     case WM_CLOSE:
       DestroyWindow(hwnd);
-      break;
+      return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
-      break;
+      return 0;
+    case WM_PAINT:
+      wmPaint(hwnd);
+      return 0;
     default:
       return DefWindowProc(hwnd, msg, wParam, lParam);
   }
-  return 0;
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {

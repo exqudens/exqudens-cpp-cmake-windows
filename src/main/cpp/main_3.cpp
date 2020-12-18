@@ -1,4 +1,6 @@
-#include <windows.h>
+#include <filesystem>
+
+#include "windows.h"
 
 ///////////////////////////////
 ///////////////////////////////
@@ -126,8 +128,17 @@ HWND createWindow(HINSTANCE inst) {
 // The actual entry point for the program!
 //  This is Windows' version of the 'main' function:
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
+  std::filesystem::path p = std::filesystem::path(__FILE__)
+      .parent_path()
+      .parent_path()
+      .parent_path()
+      .append("test")
+      .append("resources")
+      .append("bmp")
+      .append("CMakeInstall.bmp");
+
   // load our image
-  loadImage("image.bmp");
+  loadImage(strdup(p.string().c_str()));
 
   // create our window
   HWND wnd = createWindow(inst);
