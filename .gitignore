@@ -1,5 +1,8 @@
 # Directories
 .idea/
+.vs/
+idea-build/
+vs-build/
 build/
 
 # Files
@@ -7,4 +10,4 @@ build/
 *.iws
 *.ipr
 *.ids
-*.exe
+CMakeSettings.json
