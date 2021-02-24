@@ -1,158 +1,253 @@
-#include <filesystem>
-
+#include <iostream>
+#include <cmath>
 #include "windows.h"
 
-///////////////////////////////
-///////////////////////////////
-// I hate globals, but to keep this simple, we'll have our image stuff be global
-HDC imageDC;        // the DC to hold our image
-HBITMAP imageBmp;       // the actual bitmap which contains the image (will be put in the DC)
-HBITMAP imageBmpOld;    // the DC's old bitmap (for cleanup)
+using std::cos;
+using std::sin;
 
-const int screenSize_X = 640;
-const int screenSize_Y = 480;
+struct pixel {
+  union {
+    struct {
+      /* 'a' unused, used for 32-bit alignment,
+       * could also be used to store pixel alpha
+       */
+      unsigned char b, g, r, a;
+    };
+    int val;
+  };
 
-///////////////////////////////
-///////////////////////////////
-// Function to load the image into our DC so we can draw it to the screen
-void loadImage(const char* pathname) {
-  imageDC = CreateCompatibleDC(NULL);     // create an offscreen DC
+  pixel(): b(0), g(0), r(0), a(0) {
+    val = 0;
+  }
+};
 
-  imageBmp = (HBITMAP) LoadImageA(         // load the bitmap from a file
-      NULL,                           // not loading from a module, so this is NULL
-      pathname,                       // the path we're loading from
-      IMAGE_BITMAP,                   // we are loading a bitmap
-      0, 0,                            // don't need to specify width/height
-      LR_DEFAULTSIZE | LR_LOADFROMFILE// use the default bitmap size (whatever the file is), and load it from a file
-  );
+// Window client size
+const int globalWidth = 800;
+const int globalHeight = 600;
 
-  imageBmpOld = (HBITMAP) SelectObject(imageDC, imageBmp);  // put the loaded image into our DC
+/* Target fps, though it's hard to achieve this fps
+ * without extra timer functionality unless you have
+ * a powerfull processor. Raising this value will
+ * increase the speed, though it will use up more CPU.
+ */
+const int globalFps = 50;
+
+// Global Windows/Drawing variables
+HBITMAP globalHbmp;
+HANDLE globalHTickThread;
+HWND globalHwnd;
+HDC globalHdcMem;
+
+// Pointer to pixels (will automatically have space allocated by CreateDIBSection
+pixel* globalPixels;
+
+void onFrame(pixel *pixels) {
+  // This is where all the drawing takes place
+
+  pixel *p;
+
+  // +0.005 each frame
+  static float frameOffset = 0;
+
+  float px; // % of the way across the bitmap
+  float py; // % of the way down the bitmap
+
+  for (int x = 0; x < globalWidth; ++x) {
+    for (int y = 0; y < globalHeight; ++y) {
+      p = &pixels[y * globalWidth + x];
+
+      px = float(x) / float(globalWidth);
+      py = float(y) / float(globalHeight);
+
+      p->r = (unsigned char) (((cos(px + frameOffset * 10) / sin(py + frameOffset)) * cos(frameOffset * 3) * 10) * 127 + 127);
+      p->g = ~p->r;
+      p->b = 255;
+    }
+  }
+
+  frameOffset += 0.005f;
 }
 
+DWORD WINAPI tickThreadProc(HANDLE handle) {
+  // Give plenty of time for main thread to finish setting up
+  Sleep(50);
+  ShowWindow(globalHwnd, SW_SHOW);
 
-///////////////////////////////
-// Function to clean up
-void cleanUpImage() {
-  SelectObject(imageDC, imageBmpOld);      // put the old bmp back in our DC
-  DeleteObject(imageBmp);                 // delete the bmp we loaded
-  DeleteDC(imageDC);                      // delete the DC we created
+  // Retrieve the window's DC
+  HDC hdc = GetDC(globalHwnd);
+
+  // Create DC with shared pixels to variable 'pixels'
+  globalHdcMem = CreateCompatibleDC(hdc);
+  HBITMAP hbmOld;
+  hbmOld = (HBITMAP) SelectObject(globalHdcMem, globalHbmp);
+
+  // Milliseconds to wait each frame
+  int delay = 1000 / globalFps;
+
+  while (true) {
+    // Do stuff with pixels
+    onFrame(globalPixels);
+
+    // Draw pixels to window
+    BitBlt(hdc, 0, 0, globalWidth, globalHeight, globalHdcMem, 0, 0, SRCCOPY);
+
+    // Wait
+    Sleep(delay);
+  }
+
+  SelectObject(globalHdcMem, hbmOld);
+  DeleteDC(hdc);
 }
 
-///////////////////////////////
-///////////////////////////////
-// The function to draw our image to the display (the given DC is the screen DC)
-void drawImage(HDC screen) {
-  BitBlt(
-      screen,         // tell it we want to draw to the screen
-      0, 0,            // as position 0,0 (upper-left corner)
-      screenSize_X,   // width of the rect to draw
-      screenSize_Y,   // height of the rect
-      imageDC,        // the DC to get the rect from (our image DC)
-      0, 0,            // take it from position 0,0 in the image DC
-      SRCCOPY         // tell it to do a pixel-by-pixel copy
-  );
+void MakeSurface(HWND hwnd) {
+  /* Use CreateDIBSection to make a HBITMAP which can be quickly
+   * blitted to a surface while giving 100% fast access to pixels
+   * before blit.
+   */
+
+  // Desired bitmap properties
+  BITMAPINFO bmi;
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFO);
+  bmi.bmiHeader.biWidth = globalWidth;
+  bmi.bmiHeader.biHeight =  -globalHeight; // Order pixels from top to bottom
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32; // last byte not used, 32 bit for alignment
+  bmi.bmiHeader.biCompression = BI_RGB;
+  bmi.bmiHeader.biSizeImage = 0;
+  bmi.bmiHeader.biXPelsPerMeter = 0;
+  bmi.bmiHeader.biYPelsPerMeter = 0;
+  bmi.bmiHeader.biClrUsed = 0;
+  bmi.bmiHeader.biClrImportant = 0;
+  bmi.bmiColors[0].rgbBlue = 0;
+  bmi.bmiColors[0].rgbGreen = 0;
+  bmi.bmiColors[0].rgbRed = 0;
+  bmi.bmiColors[0].rgbReserved = 0;
+
+  HDC hdc = GetDC(hwnd);
+
+  // Create DIB section to always give direct access to pixels
+  globalHbmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void**)&globalPixels, nullptr, 0);
+  DeleteDC(hdc);
+
+  // Create a new thread to use as a timer
+  globalHTickThread = CreateThread(nullptr, 0, &tickThreadProc, nullptr, 0, nullptr);
 }
 
-
-///////////////////////////////
-///////////////////////////////
-// A callback to handle Windows messages as they happen
-LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM w, LPARAM l) {
-  // what kind of message is this?
-  switch (msg) {
-    // we are interested in WM_PAINT, as that is how we draw
-    case WM_PAINT: {
-      PAINTSTRUCT ps;
-      HDC screen = BeginPaint(wnd, &ps);   // Get the screen DC
-      drawImage(screen);                  // draw our image to our screen DC
-      EndPaint(wnd, &ps);                  // clean up
+LRESULT CALLBACK WndProc(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+  switch ( msg ) {
+    case WM_CREATE:
+    {
+      MakeSurface(hwnd);
     }
       break;
-    // we are also interested in the WM_CLOSE message, as that lets us know when to close the window
+    case WM_PAINT:
+    {
+      PAINTSTRUCT ps;
+      HDC hdc = BeginPaint(hwnd, &ps);
+
+      // Draw pixels to window when window needs repainting
+      BitBlt(hdc, 0, 0, globalWidth, globalHeight, globalHdcMem, 0, 0, SRCCOPY);
+
+      EndPaint(hwnd, &ps);
+    }
+      break;
     case WM_CLOSE:
-      DestroyWindow(wnd);
+    {
+      DestroyWindow(hwnd);
+    }
       break;
-    // we are also interested in the WM_DESTROY message, as that lets us know when to close the window
     case WM_DESTROY:
+    {
+      TerminateThread(globalHTickThread, 0);
       PostQuitMessage(0);
+    }
       break;
-    // for everything else, let the default window message handler do its thing
     default:
-      return DefWindowProc(wnd, msg, w, l);
+      return DefWindowProc(hwnd, msg, wParam, lParam);
   }
 
   return 0;
 }
 
-
-///////////////////////////////
-///////////////////////////////
-// A function to create the window and get it set up
-HWND createWindow(HINSTANCE inst) {
-  WNDCLASSEX wc = {0};        // create a WNDCLASSEX struct and zero it
-  wc.cbSize = sizeof(WNDCLASSEX);     // tell windows the size of this struct
-  wc.hCursor = LoadCursor(NULL, IDC_ARROW);        // tell it to use the normal arrow cursor for this window
-  wc.hInstance = inst;                   // give it our program instance
-  wc.lpfnWndProc = wndProc;                // tell it to use our wndProc function to handle messages
-  wc.lpszClassName = TEXT("DisplayImage");   // give this window class a name.
-
-  RegisterClassEx(&wc);           // register our window class with Windows
-
-  // the style of the window we want... we want a normal window but do not want it resizable.
-  int style = WS_OVERLAPPED | WS_CAPTION |
-              WS_SYSMENU;    // normal overlapped window with a caption and a system menu (the X to close)
-
-  // Figure out how big we need to make the window so that the CLIENT area (the part we will be drawing to) is
-  //  the desired size
-  RECT rc = {0, 0, screenSize_X, screenSize_Y};      // desired rect
-  AdjustWindowRect(&rc, style,
-                   FALSE);              // adjust the rect with the given style, FALSE because there is no menu
-
-  return CreateWindow(            // create the window
-      TEXT("DisplayImage"),       // the name of the window class to use for this window (the one we just registered)
-      TEXT("Display an Image"),   // the text to appear on the title of the window
-      style |
-      WS_VISIBLE,         // the style of this window (OR it with WS_VISIBLE so it actually becomes visible immediately)
-      100, 100,                    // create it at position 100,100
-      rc.right - rc.left,         // width of the window we want
-      rc.bottom - rc.top,         // height of the window
-      NULL, NULL,                  // no parent window, no menu
-      inst,                       // our program instance
-      NULL);                      // no extra parameter
-
-}
-
-
-///////////////////////////////
-///////////////////////////////
-// The actual entry point for the program!
-//  This is Windows' version of the 'main' function:
-int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
-  std::filesystem::path p = std::filesystem::path(__FILE__)
-      .parent_path()
-      .parent_path()
-      .parent_path()
-      .append("test")
-      .append("resources")
-      .append("bmp")
-      .append("CMakeInstall.bmp");
-
-  // load our image
-  loadImage(strdup(p.string().c_str()));
-
-  // create our window
-  HWND wnd = createWindow(inst);
-
-  // Do the message pump!  keep polling for messages (and respond to them)
-  //  until the user closes the window.
+int WINAPI WinMain(
+    HINSTANCE hInstance,
+    HINSTANCE hPrevInstance,
+    LPSTR lpCmdLine,
+    int nShowCmd)
+{
+  WNDCLASSEX wc;
   MSG msg;
-  while (GetMessage(&msg, wnd, 0, 0)) // while we are getting non-WM_QUIT messages...
-  {
-    TranslateMessage(&msg);     // translate them
-    DispatchMessage(&msg);      // and dispatch them (our wndProc will process them)
+  LPCSTR className = "animation_class";
+
+  // Init wc
+  wc.cbClsExtra = 0;
+  wc.cbWndExtra = 0;
+  wc.cbSize = sizeof( WNDCLASSEX );
+  wc.hbrBackground = CreateSolidBrush(0);
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+  wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
+  wc.hInstance = hInstance;
+  wc.lpfnWndProc = WndProc;
+  wc.lpszClassName = className;
+  wc.lpszMenuName = nullptr;
+  wc.style = 0;
+
+  // Register wc
+  if (!RegisterClassEx(&wc)) {
+    MessageBox(nullptr, "Failed to register window class.", "Error", MB_OK);
+    return 0;
   }
 
-  // once the user quits....
-  cleanUpImage();
+  // Make window
+  globalHwnd = CreateWindowEx(
+      WS_EX_APPWINDOW,
+      className,
+      "Animation",
+      WS_MINIMIZEBOX | WS_SYSMENU | WS_POPUP | WS_CAPTION,
+      300,
+      200,
+      globalWidth,
+      globalHeight,
+      nullptr,
+      nullptr,
+      hInstance,
+      nullptr
+  );
+
+
+  RECT rcClient, rcWindow;
+  POINT ptDiff;
+
+  // Get window and client sizes
+  GetClientRect(globalHwnd, &rcClient);
+  GetWindowRect(globalHwnd, &rcWindow);
+
+  // Find offset between window size and client size
+  ptDiff.x = (rcWindow.right - rcWindow.left) - rcClient.right;
+  ptDiff.y = (rcWindow.bottom - rcWindow.top) - rcClient.bottom;
+
+  // Resize client
+  MoveWindow(
+      globalHwnd,
+      rcWindow.left,
+      rcWindow.top,
+      globalWidth + ptDiff.x,
+      globalHeight + ptDiff.y,
+      false
+  );
+
+  UpdateWindow(globalHwnd);
+
+  while (GetMessage(&msg, nullptr, 0, 0) > 0) {
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
+  }
+
   return 0;
 }
